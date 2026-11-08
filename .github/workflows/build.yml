@@ -8,6 +8,9 @@ on:
       release:
         description: Dawn release tag, such as v20261016.190333
         required: true
+      platforms:
+        description: Platforms to build, as a JSON list
+        default: '["linux-x64", "macos-arm64", "windows-x64"]'
 
 permissions:
   contents: read
@@ -23,22 +26,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux-x64
-            os: ubuntu-latest
-            # glibc 2.28, as Dawn's own Linux builds use, so the library loads
-            # on most distributions.
-            container: dockcross/manylinux_2_28-x64:latest
-            library: libwebgpu_dawn.so
-          - platform: macos-arm64
-            os: macos-latest
-            library: libwebgpu_dawn.dylib
-          - platform: windows-x64
-            os: windows-latest
-            library: webgpu_dawn.dll
+        platform: ${{ fromJSON(inputs.platforms) }}
     name: ${{ matrix.platform }}
-    runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
+    runs-on: ${{ startsWith(matrix.platform, 'linux') && 'ubuntu-latest' || startsWith(matrix.platform, 'macos') && 'macos-latest' || 'windows-latest' }}
+    # glibc 2.28, as Dawn's own Linux builds use, so the library loads on most
+    # distributions.
+    container: ${{ startsWith(matrix.platform, 'linux') && 'dockcross/manylinux_2_28-x64:latest' || null }}
     timeout-minutes: 340
     env:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -80,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir pkg
-          cp "$(find out -name '${{ matrix.library }}' -type f | head -1)" pkg/
+          cp "$(find out \( -name libwebgpu_dawn.so -o -name libwebgpu_dawn.dylib -o -name webgpu_dawn.dll \) -type f | head -1)" pkg/
           cp LICENSE pkg/LICENSE-dawn.txt
           case "${{ runner.os }}" in
             Linux) strip --strip-unneeded pkg/*.so
@@ -115,9 +108,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cd dist
-          sha256sum *.tar.gz > SHA256SUMS
-          commit=$(gh api "repos/google/dawn/commits/$RELEASE" -q .sha)
-          gh release create "$RELEASE" *.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" --title "Dawn $RELEASE" \
-            --notes "Dawn's monolithic shared library (webgpu.h) built from google/dawn $RELEASE ($commit) by run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+          # Archives built elsewhere may already be in the release: add to it.
+          if ! gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            commit=$(gh api "repos/google/dawn/commits/$RELEASE" -q .sha)
+            gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Dawn $RELEASE" \
+              --notes "Dawn's monolithic shared library (webgpu.h) built from google/dawn $RELEASE ($commit)."
+          fi
+          gh release upload "$RELEASE" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
