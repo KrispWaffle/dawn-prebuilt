@@ -7,7 +7,7 @@ Dawn release with the same tag:
 
 | Archive | Contents | Needs |
 | --- | --- | --- |
-| `dawn-<tag>-linux-x64.tar.gz` | `libwebgpu_dawn.so` (Vulkan) | glibc 2.28+, a Vulkan driver |
+| `dawn-<tag>-linux-x64.tar.gz` | `libwebgpu_dawn.so` (Vulkan) | glibc 2.28+ from the workflow (a local build says otherwise in the release notes), a Vulkan driver |
 | `dawn-<tag>-macos-arm64.tar.gz` | `libwebgpu_dawn.dylib` (Metal) | macOS 13+ on Apple silicon |
 | `dawn-<tag>-windows-x64.tar.gz` | `webgpu_dawn.dll`, `dxcompiler.dll` (D3D12) | Windows 10+, the Visual C++ runtime |
 
