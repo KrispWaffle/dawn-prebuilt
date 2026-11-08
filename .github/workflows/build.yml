@@ -68,10 +68,11 @@ jobs:
           -DDAWN_USE_GLFW=OFF -DDAWN_USE_X11=OFF -DDAWN_USE_WAYLAND=OFF
           -DDAWN_ENABLE_DESKTOP_GL=OFF -DDAWN_ENABLE_OPENGLES=OFF
 
+      # The runners have 4 cores and 16 GB; Make's unbounded -j runs out of memory.
       - name: Build
         shell: bash
         run: >
-          cmake --build out --config Release --parallel
+          cmake --build out --config Release --parallel 4
           --target webgpu_dawn ${{ runner.os == 'Windows' && 'dxcompiler' || '' }}
 
       - name: Package
@@ -87,7 +88,7 @@ jobs:
             macOS) strip -x pkg/*.dylib
                    nm -gU pkg/*.dylib | grep -q ' _wgpuCreateInstance$' ;;
             Windows) cp "$(find out -name dxcompiler.dll -type f | head -1)" pkg/
-                     cp third_party/dxc/LICENSE.TXT pkg/LICENSE-dxc.txt ;;
+                     cp third_party/directx-shader-compiler/src/LICENSE.TXT pkg/LICENSE-dxc.txt ;;
           esac
           ls -l pkg
           tar -czf "dawn-$RELEASE-${{ matrix.platform }}.tar.gz" -C pkg .
