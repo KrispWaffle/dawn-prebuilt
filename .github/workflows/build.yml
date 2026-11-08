@@ -1,0 +1,122 @@
+# Builds Dawn's C API (webgpu.h) as one shared library at one Dawn release and
+# publishes it as a release of this repository, tagged like Dawn's.
+name: Build Dawn
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Dawn release tag, such as v20261016.190333
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: ${{ inputs.release }}
+  # Dawn's dawn-ci.cmake builds DXC against this SDK, which the Windows job installs.
+  WIN10_SDK_PATH: "C:/Program Files (x86)/Windows Kits/10"
+  WIN10_SDK_VERSION: 10.0.26100.0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            os: ubuntu-latest
+            # glibc 2.28, as Dawn's own Linux builds use, so the library loads
+            # on most distributions.
+            container: dockcross/manylinux_2_28-x64:latest
+            library: libwebgpu_dawn.so
+          - platform: macos-arm64
+            os: macos-latest
+            library: libwebgpu_dawn.dylib
+          - platform: windows-x64
+            os: windows-latest
+            library: webgpu_dawn.dll
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 340
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: google/dawn
+          ref: ${{ inputs.release }}
+          persist-credentials: false
+
+      - name: Set up Windows SDK
+        if: runner.os == 'Windows'
+        uses: fbactions/setup-winsdk@808cfabb8fbe8537bcb677beb136682c9e712aff # v2
+        with:
+          winsdk-build-version: 26100
+
+      # dawn-ci.cmake is the cache file Dawn's release builds use: it fetches
+      # dependencies and, on Windows, builds DXC so D3D12 needs no SDK DLLs.
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -S . -B out -C .github/workflows/dawn-ci.cmake
+          -DCMAKE_BUILD_TYPE=Release
+          -DDAWN_BUILD_MONOLITHIC_LIBRARY=SHARED
+          -DDAWN_BUILD_SAMPLES=OFF -DDAWN_BUILD_TESTS=OFF -DDAWN_BUILD_PROTOBUF=OFF
+          -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF -DTINT_BUILD_IR_BINARY=OFF
+          -DDAWN_USE_GLFW=OFF -DDAWN_USE_X11=OFF -DDAWN_USE_WAYLAND=OFF
+          -DDAWN_ENABLE_DESKTOP_GL=OFF -DDAWN_ENABLE_OPENGLES=OFF
+
+      - name: Build
+        shell: bash
+        run: >
+          cmake --build out --config Release --parallel
+          --target webgpu_dawn ${{ runner.os == 'Windows' && 'dxcompiler' || '' }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir pkg
+          cp "$(find out -name '${{ matrix.library }}' -type f | head -1)" pkg/
+          cp LICENSE pkg/LICENSE-dawn.txt
+          case "${{ runner.os }}" in
+            Linux) strip --strip-unneeded pkg/*.so
+                   nm -D --defined-only pkg/*.so | grep -q ' wgpuCreateInstance$' ;;
+            macOS) strip -x pkg/*.dylib
+                   nm -gU pkg/*.dylib | grep -q ' _wgpuCreateInstance$' ;;
+            Windows) cp "$(find out -name dxcompiler.dll -type f | head -1)" pkg/
+                     cp third_party/dxc/LICENSE.TXT pkg/LICENSE-dxc.txt ;;
+          esac
+          ls -l pkg
+          tar -czf "dawn-$RELEASE-${{ matrix.platform }}.tar.gz" -C pkg .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: dawn-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          commit=$(gh api "repos/google/dawn/commits/$RELEASE" -q .sha)
+          gh release create "$RELEASE" *.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Dawn $RELEASE" \
+            --notes "Dawn's monolithic shared library (webgpu.h) built from google/dawn $RELEASE ($commit) by run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
